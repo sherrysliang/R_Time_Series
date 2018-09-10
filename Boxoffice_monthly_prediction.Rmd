@@ -1,0 +1,319 @@
+---
+title: "Box Office"
+author: "Sherry Liang, Julia Zhou, Zhuo Leng"
+date: "5/30/2018"
+output: html_document
+---
+```{r,message=FALSE}
+library(forecast)
+library(zoo)
+library(xts)
+library(TSA)
+library(fGarch)
+library(ggplot2)
+library(TSPred)
+```
+
+```{r}
+data.clean<-read.csv("~/Documents/Analytics/Time_Series/Project/BoxOffice_clean.csv")
+head(data.clean)
+data.ts <- ts(data.clean[,c(4,2,3,5,6,7)],start = c(1982,1),end=c(2018,5),frequency = 12)
+head(data.ts,10)
+tail(data.ts,10)
+```
+
+```{r}
+plot(data.ts[,1],ylab="Total Gross (millions)",xlab="Year",main="Box Office",xaxp  = c(1982, 2018, 12))
+```
+
+```{r}
+# visualize trend and seasonality of total gross
+data.ts[,1] %>%
+  stl(t.window=12, s.window="periodic", robust=TRUE) %>%
+  autoplot()+ggtitle("Box Office Monthly Data (1982-2018)")+ylab("Total Gross (millions)")
+```
+
+### seasonality
+
+```{r}
+ggseasonplot(data.ts[,1], year.labels = TRUE, year.labels.left = TRUE, main='Seasonal plot of Box Office gross')
+```
+
+```{r}
+adf.test(data.ts[,1])
+```
+
+```{r}
+par(mfrow=c(2,1))
+acf(data.ts[,1],lag.max = 48, main="ACF Plot for Box Office Data")
+pacf(data.ts[,1],lag.max = 48, main="PACF Plot for Box Office Data")
+```
+
+
+---------------------- Unemployement Rate ---------------------------------
+
+```{r}
+plot(data.ts[,1],data.ts[,6],xlab="Total Gross",ylab="Unemployment Rate")
+```
+
+
+```{r}
+nrow(data.ts)
+fit.reg <- lm(data.ts[-c(436,437),1]~data.ts[-c(436,437),c(4,6)]) 
+summary(fit.reg)
+```
+
+```{r}
+fit.xreg <- auto.arima(data.ts[,1], xreg =data.ts[,c(4,6)]) 
+summary(fit.xreg)
+```
+
+----------------------------------- End --------------------------------------
+
+
+# Select best range of data
+```{r,eval=F, echo=T}
+set.seed(123)
+experiment_year <- function(x){
+  train <- window(data.ts,start=c(2017-x,4),end=c(2017,4))
+  fit.ets <-ets(train[,1])
+  fit.hw<-HoltWinters(train[,1]) #, seasonal = "multiplicative"
+  fit.arima<-auto.arima(train[,1],seasonal= FALSE, stepwise = F)
+  fit.sarima<-auto.arima(train[,1],seasonal= TRUE, stepwise = F)
+  fit.arfima<-arfima(train[,1])
+  fit.nnar<-nnetar(train[,1])
+  fit.tbats<-tbats(train[,1], biasadj=TRUE)
+  # ARMA +GARCH
+  train.xts<-xts(train[,1],order.by = as.yearmon(index(train)))
+  log.bo <- diff(log(train.xts))[-1]
+  fit.garch.arma <-auto.arima(log.bo,trace = FALSE,test='kpss',ic='aic')
+  # summary(fit.garch.arma)
+  # Box.test(fit.garch.arma$residuals^2,lag=12,type = "Ljung-Box")
+
+  fit.garch<- garchFit(~arma(1,2)+garch(1,1),data=log.bo,cond.dist="std",trace=F)
+  # summary(fit.garch)
+  
+  #Forecast
+  forecast.log.bo <- predict(fit.garch, n.ahead=12)$meanForecast
+  GARCH <-as.numeric(tail(train.xts,1)) * exp(cumsum(forecast.log.bo))
+
+  #forecast
+  h<-12
+  forecast.ets <- forecast(fit.ets, h=h)
+  forecast.hw <- forecast(fit.hw,h=h)
+  forecast.arima <- forecast(fit.arima,h=h)
+  forecast.sarima <- forecast(fit.sarima,h=h)
+  forecast.arfima <- forecast(fit.arfima,h=h)
+  forecast.nnar <- forecast(fit.nnar, h=h)
+  forecast.tbats <- forecast(fit.tbats, h=h)
+  
+  predictions <- list()
+  predictions$ets <- forecast.ets$mean
+  predictions$hw <- forecast.hw$mean
+  predictions$arima <- forecast.arima$mean 
+  predictions$sarima <- forecast.sarima$mean 
+  predictions$arfima <- forecast.arfima$mean
+  predictions$garch <- GARCH
+  predictions$nnar <- forecast.nnar$mean 
+  predictions$tbats <- forecast.tbats $mean
+  
+  tab <-mapply(sMAPE, predictions, list(test[,1]))
+  # tidy(tab)
+  # print(min(tab))
+  # test_years$as.character(x) <- min(tab)
+  
+  res <- list()
+  res$v <- min(tab)
+  res$l <- tab
+  
+  return(res)
+  # return (list(min(tab), tab))
+}
+```
+
+
+```{r}
+# split train and test
+train <- window(data.ts,start=c(2017-15,4),end=c(2017,4))
+test <- window(data.ts,start=c(2017,5),end=c(2018,4))
+head(train)
+test
+```
+
+# Models
+
+
+Linear regression with ARMA errors (use arima with xreg)
+```{r}
+fit.xreg<- auto.arima(train[,1], xreg=train[, "Movies"])
+summary(fit.xreg)
+plot(resid(fit.xreg),main='Residuals of XREG Model')
+
+fit.lm<-lm(TotalGross~Movies, data=data.ts)
+summary(fit.lm)
+```
+
+```{r}
+
+fit.ets <-ets(train[,1])
+summary(fit.ets)
+plot(fit.ets$residuals,main='Residuals of ETS Model')
+```
+
+```{r}
+fit.hw<-HoltWinters(train[,1]) #, seasonal = "multiplicative"
+summary(fit.hw)
+plot(resid(fit.hw),main='Residuals of Holt Winters Model')
+```
+
+```{r}
+fit.arima<-auto.arima(train[,1],seasonal= FALSE, stepwise = F)
+summary(fit.arima)
+plot(fit.arima$residuals,main='Residuals of ARIMA Model')
+```
+
+```{r}
+fit.sarima<-auto.arima(train[,1],seasonal= TRUE, stepwise = F)
+summary(fit.sarima)
+plot(fit.sarima$residuals,main='Residuals of SARIMA Model')
+tsdisplay(residuals(fit.sarima))
+```
+
+```{r}
+fit.arfima<-arfima(train[,1])
+summary(fit.arfima)
+plot(fit.arfima$residuals,main='Residuals of ARFIMA Model')
+```
+
+```{r}
+# ARMA +GARCH
+train.xts<-xts(train[,1],order.by = as.yearmon(index(train)))
+log.bo <- diff(log(train.xts))[-1]
+fit.garch.arma <-auto.arima(log.bo,trace = FALSE,test='kpss',ic='aic')
+summary(fit.garch.arma)
+Box.test(fit.garch.arma$residuals^2,lag=12,type = "Ljung-Box")
+
+fit.garch<- garchFit(~arma(1,2)+garch(1,1),data=log.bo,cond.dist="std",trace=F)
+summary(fit.garch)
+
+#Forecast
+forecast.log.bo <- predict(fit.garch, n.ahead=12)$meanForecast
+GARCH <-as.numeric(tail(train.xts,1)) * exp(cumsum(forecast.log.bo))
+```
+
+```{r}
+fit.nnar2<-nnetar(train[,1],xreg=train[, "Movies"])
+summary(fit.nnar2)
+plot(fit.nnar2$residuals,main='Residuals of NNAR Model')
+```
+
+
+```{r}
+fit.nnar<-nnetar(train[,1])
+summary(fit.nnar)
+plot(fit.nnar$residuals,main='Residuals of NNAR Model')
+```
+
+```{r}
+fit.tbats<-tbats(train[,1], biasadj=TRUE)
+summary(fit.tbats)
+plot(resid(fit.tbats),main='Residuals of TBATS Model')
+```
+
+```{r}
+#forecast
+h<-12
+forecast.xreg <- predict(fit.xreg, n.ahead=h, newxreg=test[,"Movies"])
+forecast.ets <- forecast(fit.ets, h=h)
+forecast.hw <- forecast(fit.hw,h=h)
+forecast.arima <- forecast(fit.arima,h=h)
+forecast.sarima <- forecast(fit.sarima,h=h)
+forecast.arfima <- forecast(fit.arfima,h=h)
+forecast.nnar <- forecast(fit.nnar, h=h)
+forecast.nnar2 <- forecast(fit.nnar2, h=h,xreg = test[,"Movies"])
+
+forecast.tbats <- forecast(fit.tbats, h=h)
+```
+
+
+```{r}
+plot(forecast.ets)
+plot(forecast.arima)
+plot(forecast.hw)
+plot(forecast.sarima)
+plot(forecast.arfima)
+plot(forecast.nnar)
+plot(forecast.tbats)
+```
+
+```{r}
+# Compare SMAPE
+preds <-list()
+preds$xreg <- forecast.xreg$pred
+preds$ets<- forecast.ets$mean
+preds$hw<- forecast.hw$mean
+preds$arima<- forecast.arima$mean
+preds$sarima<- forecast.sarima$mean
+preds$arfima<- forecast.arfima$mean
+preds$nnar<- forecast.nnar$mean
+preds$nnar2<- forecast.nnar2$mean
+preds$tbats<- forecast.tbats$mean
+
+preds$avg <- (forecast.xreg$pred+forecast.ets$mean+forecast.hw$mean+forecast.sarima$mean+ forecast.nnar$mean+forecast.tbats$mean)/6
+(mapply(sMAPE, preds, list(test[,1])))
+```
+
+```{r}
+# Compare AIC
+aic <-list()
+
+cbind(xreg=fit.xreg$aic,ets=fit.ets$aic,arima=fit.arima$aic,sarima=fit.sarima$aic,tbats=fit.tbats$AIC)
+
+```
+
+```{r}
+autoplot(data.ts[,1]) +
+  autolayer(forecast.ets$mean, series="ETS") +
+  autolayer(forecast.hw$mean, series="HW") +
+  autolayer(forecast.arima$mean, series="ARIMA") +
+  autolayer(forecast.sarima$mean, series="SARIMA") + 
+  autolayer(forecast.arfima$mean, series="ARFIMA") + 
+  autolayer(forecast.nnar$mean, series="NNAR") +
+  autolayer(forecast.nnar2$mean, series="NNAR2") +
+  autolayer(forecast.tbats$mean, series="TBATS") +
+  xlab("Year") + ylab("Total Gross (Millions)") +
+  ggtitle("Box Office")
+```
+
+Model Selection
+
+```{r}
+autoplot(test[,1]) +
+  autolayer(forecast.ets$mean, series="ETS") +
+  autolayer(forecast.hw$mean, series="HW") +
+  autolayer(forecast.arima$mean, series="ARIMA") +
+  autolayer(forecast.sarima$mean, series="SARIMA") + 
+  autolayer(forecast.arfima$mean, series="ARFIMA") + 
+        autolayer(preds$xreg, series="XREG") +
+  autolayer(forecast.nnar$mean, series="NNAR",size=2) +
+          autolayer(forecast.nnar2$mean, series="NNAR2",size=2) +
+  autolayer(forecast.tbats$mean, series="TBATS") +
+  xlab("Year") + ylab("Total Gross (Millions)") +
+  ggtitle("Box Office Forecast (2016)")
+```
+
+Result
+
+```{r}
+autoplot(test[,1],size=2) +
+  autolayer(forecast.ets$mean, series="ETS") +
+  autolayer(forecast.hw$mean, series="HW") +
+  autolayer(forecast.sarima$mean, series="SARIMA") + 
+          autolayer(preds$xreg, series="XREG") +
+  autolayer(forecast.nnar$mean, series="NNAR",size=2) +
+        autolayer(forecast.nnar2$mean, series="NNAR2",size=2) +
+  autolayer(forecast.tbats$mean, series="TBATS") +
+  xlab("Year") + ylab("Total Gross (Millions)") +
+  ggtitle("Box Office")
+```
+

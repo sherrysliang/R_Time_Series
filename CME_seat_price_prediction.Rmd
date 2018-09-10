@@ -1,0 +1,587 @@
+---
+title: "Time_Series_CME"
+author: "Sherry Liang"
+date: "5/12/2018"
+output: html_document
+---
+There are three classes of seats CME, IMM, and IOM which confer the rights to trade different sets of commodities traded. CME seat owners can trade everything, IMM seat owners are allowed to trade everything except agricultural products, and IOM seat owners are allowed to trade only in index products and all options.
+
+The seat price files are marked as ***S. The files contain the price for which CME seats sold and the date of the sale. As expected, the seat price time series is irregularly spaced in time. 
+
+Task A is to adopt an algorithm to create a time series for the 3 classes of seats that contains a seat price for each month starting from January 2001 to December 2013. 
+
+```{r,message=FALSE}
+library( zoo )
+library( xts )
+library( TSA )
+library( imputeTS )
+library( forecast )
+library( fGarch )
+library( TSPred )
+```
+
+```{r}
+cme <- read.csv(".../cmeS.csv")
+imm <- read.csv(".../immS.csv")
+iom <- read.csv(".../iomS.csv")
+contracts.volume <- read.csv(".../Contracts_Volume.csv")
+contracts.classification <- read.csv(".../Contracts_Classification.csv")
+```
+
+```{r}
+str(cme)
+str(imm)
+str(iom)
+```
+
+> From the result above we can see that cme, imm, and iom have 341, 510 and 710 observations respectively and the seat price time series is irregularly spaced in time. As we need to build a model that contains a seat price for each month starting from January 2001 to December 2013 and all 3 seat classes have sale prices for January 2001, we can transform the data to a monthly time series data by firstly calculating the average for each month and secondly imputing missing values for certain months.
+
+```{r}
+# transform dataframe into xts format  
+cme.xts <- xts(x=cme$price, order.by= as.Date(cme$DateOfSale, "%m/%d/%Y") )
+imm.xts <- xts(x=imm$price, order.by= as.Date(imm$DateOfSale, "%m/%d/%Y") )
+iom.xts <- xts(x=iom$price, order.by= as.Date(iom$DateOfSale, "%m/%d/%Y") )
+```
+
+```{r, include=FALSE}
+clean.xts<-function(input.xts){
+        xts.monthly.raw <- apply.monthly(input.xts, mean)
+        index(xts.monthly.raw)<-as.yearmon(index(xts.monthly.raw))
+        # merge the index and the monthly data, filling in missing value as NA
+        xts.monthly.withna <- merge(xts.monthly.raw, td, all = TRUE, fill = NA)
+       
+        # Missing values are replaced by linear interpolation 
+        xts.clean1 <-na.approx(xts.monthly.withna)
+        # Missing values are replaced by cubic spline interpolation
+        xts.clean2 <-na.spline(xts.monthly.withna)
+        # Missing values are replaced by Last Observation Carried Forward
+        xts.clean3 <-na.locf(xts.monthly.withna)
+        # 
+        xts.clean4 <-na.kalman(xts.monthly.withna,model = "auto.arima",smooth = TRUE)
+        xts.clean5 <-na.kalman(xts.monthly.withna,model = "StructTS",smooth = TRUE)
+        return(xts.clean4);
+}
+```
+
+```{r}
+# create an index for Jan 2001 to Dec 2013
+td<-as.yearmon(seq(as.Date("2001-01-01"), as.Date("2013-12-01"), by = "month"))
+
+# 1. transform cme data
+cme.monthly.raw <- apply.monthly(cme.xts, mean)
+index(cme.monthly.raw)<-as.yearmon(index(cme.monthly.raw))
+# merge the index and the monthly data, filling in missing value as NA
+cme.monthly.withna <- merge(cme.monthly.raw, td, all = TRUE, fill = NA)
+plot(cme.monthly.withna)
+```
+
+```{r}
+# 2. transform imm data
+imm.monthly.raw <- apply.monthly(imm.xts, mean)
+index(imm.monthly.raw)<-as.yearmon(index(imm.monthly.raw))
+imm.monthly.withna <- merge(imm.monthly.raw, td, all = TRUE, fill = NA)
+plot(imm.monthly.withna)
+```
+
+```{r}
+# 3. transform iom data
+iom.monthly.raw <- apply.monthly(iom.xts, mean)
+index(iom.monthly.raw)<-as.yearmon(index(iom.monthly.raw))
+iom.monthly.withna <- merge(iom.monthly.raw, td, all = TRUE, fill = NA)
+plot(iom.monthly.withna)
+```
+
+> There are many ways to replace the missing values. In zoo package, there are choices like na.locf (replace missing value with last observation carried forward), na.approx (replace missing value with linear interpolation), na.spline (replace missing value with cubic spline interpolation). With imputeTS package, we can further use Kalman Smoothing on structural time series models or on the state space representation of an arima model for imputation. I have decided to use the state space representation of arima model (using auto.arima) with KalmanSmooth as the best estimation.
+
+```{r}
+cme.clean <- na.kalman(cme.monthly.withna,model = "auto.arima",smooth = TRUE)
+plot(cme.clean)
+```
+
+```{r}
+imm.clean <- na.kalman(imm.monthly.withna,model = "auto.arima",smooth = TRUE)
+plot(imm.clean)
+```
+
+```{r}
+iom.clean <- na.kalman(iom.monthly.withna,model = "auto.arima",smooth = TRUE)
+plot(iom.clean)
+```
+
+```{r}
+# save data for further use
+seat.prices <- as.data.frame( Date=index(cme.clean), CME=cme.clean, IMM=imm.clean, IOM =iom.clean )
+```
+
+The task is to use the trading volume information to forecast the CME monthly seat price for 2013.  It is recommended to do exploratory data analysis to find initial data relationships such as correlations. For example, the total trade volume for all CME products might be a good predictor for CME seat class, but not for the others. You may have to choose and select which commodities have influence on the IMM and IOM seat prices.
+
+#### Task B
+Use the following algorithms:
+1.Linear regression (seat price is independent, volume(s) dependent)
+2.Linear regression with ARMA errors (use arima with xreg)
+3.Holt Winters
+4.ARIMA
+5.Seasonal ARIMA (SARIMA) - here seasonality is monthly
+6.Fractional ARIMA (ARFIMA) - check applicability first using the ACF
+7.ARMA and GARCH combination - use the fGarch R library and garchFit()
+Note that you have to implement each of the above algorithms for each of the 3 classes of seats: CME, IMM, IOM. 
+
+#### CME
+
+```{r}
+cme.commodity.code <-unique(as.character(contracts.classification[which(contracts.classification$Division =='CME'),]$Commodity.Code)) 
+cme.commodity.code
+```
+There are 46 unique commodity codes for CME.
+
+```{r}
+cme.contracts.volume <- contracts.volume[is.element(contracts.volume$Commodity.Indicator,cme.commodity.code),]
+head(cme.contracts.volume)
+```
+
+```{r}
+cme.contracts.volume$Date <- as.Date(cme.contracts.volume$Date,"%m/%d/%Y")
+cme.contracts.volume <- subset(cme.contracts.volume,Date >="2001-01-01" & Date <"2014-01-01")
+cme.contracts.volume$Electronic.Volume <- as.numeric(cme.contracts.volume$Electronic.Volume) 
+cme.contracts.volume <- aggregate(cbind(Electronic.Volume, Total.Volume)~Date, data=cme.contracts.volume, sum) 
+
+cme.contracts.volume$Seat.Price <- seat.prices$CME 
+# cme.contracts.volume
+
+# split the dataset
+cme.training <- subset(cme.contracts.volume, Date <"2013-01-01")
+cme.holdout <- subset(cme.contracts.volume,Date >="2013-01-01")
+head(cme.training)
+head(cme.holdout)
+```
+
+```{r}
+plot(cme.contracts.volume$Date,cme.contracts.volume$Electronic.Volume, type = "l", col = "red")
+plot(cme.contracts.volume$Date,cme.contracts.volume$Total.Volume, type = "l", col = "blue")
+```
+
+1.Linear regression (seat price is independent, volume(s) dependent)
+
+```{r}
+cme.m1 <- lm(Seat.Price ~ Electronic.Volume + Total.Volume, data=cme.training) 
+summary(cme.m1)
+```
+
+
+```{r}
+cme.m1 <- lm(Seat.Price ~ Electronic.Volume, data=cme.training) 
+summary(cme.m1)
+plot(cme.m1$residuals)
+```
+
+
+```{r}
+cme.m1.pred <- predict(cme.m1,cme.holdout)
+cme.m1.pred
+```
+
+2.Linear regression with ARMA errors (use arima with xreg)
+
+```{r}
+cme.m2<- auto.arima(cme.training$Seat.Price, xreg = cme.training[,c(2,3)], allowdrift = FALSE) 
+summary(cme.m2)
+plot(cme.m2$residuals)
+```
+
+```{r}
+cme.m2.pred <- predict(cme.m2, n.ahead=12, newxreg = cme.holdout[,c(2, 3)])$pred 
+cme.m2.pred
+```
+
+3.Holt Winters
+
+```{r}
+cme.m3 <- HoltWinters(ts(cme.training$Seat.Price,start = c(2001, 1), frequency = 12))
+summary(cme.m3)  
+plot(resid(cme.m3))
+```
+
+```{r}
+cme.m3.pred <- predict(cme.m3,n.ahead = 12)
+cme.m3.pred 
+```
+
+4.ARIMA
+```{r}
+cme.m4 <-  auto.arima(cme.training$Seat.Price, allowdrift = FALSE, stepwise=FALSE)
+summary(cme.m4)
+plot(cme.m4$residuals)
+```
+
+```{r}
+cme.m4.pred <- forecast(cme.m4,h=12)$mean
+cme.m4.pred
+```
+
+5.Seasonal ARIMA (SARIMA) - here seasonality is monthly
+```{r}
+cme.m5 <- auto.arima(ts(cme.training$Seat.Price,frequency = 12),allowdrift = FALSE)
+summary(cme.m5)
+plot(cme.m5$residuals)
+```
+
+However, there is no seasonal order.
+
+```{r}
+cme.m5.pred <- forecast(cme.m5,h=12)$mean
+cme.m5.pred
+```
+
+6.Fractional ARIMA (ARFIMA) - check applicability first using the ACF
+
+```{r}
+cme.m6 <-arfima(cme.training$Seat.Price)
+summary(cme.m6)
+plot(cme.m6$residuals)
+```
+
+```{r}
+cme.m6.pred <- forecast(cme.m6, h=12)$mean
+cme.m6.pred
+```
+
+7.ARMA and GARCH combination - use the fGarch R library and garchFit()
+
+```{r}
+cme.training.xts <- xts(cme.training$Seat.Price, order.by = as.Date(cme.training$Date,"%m/%d/%Y"))
+cme.training.logreturn <- diff(log(cme.training.xts))[-1]
+auto.arima(cme.training.logreturn)
+```
+
+```{r}
+cme.m7 <-garchFit(~arma(0,0)+garch(1,1),data = cme.training.logreturn,cond.dist = "std",trace=FALSE)
+summary(cme.m7)
+```
+
+```{r}
+cme.m7.pred.log <-predict(cme.m7,n.ahead=12)$meanForecast
+cme.m7.pred <- as.numeric(tail(cme.training.xts,1)*exp(cme.m7.pred.log))
+cme.m7.pred
+```
+
+#### IMM
+
+```{r}
+imm.commodity.code <-unique(as.character(contracts.classification[which(contracts.classification$Division =='IMM'),]$Commodity.Code)) 
+```
+
+```{r}
+imm.contracts.volume <- contracts.volume[is.element(contracts.volume$Commodity.Indicator,imm.commodity.code),]
+head(imm.contracts.volume)
+```
+
+```{r}
+imm.contracts.volume$Date <- as.Date(imm.contracts.volume$Date,"%m/%d/%Y")
+imm.contracts.volume <- subset(imm.contracts.volume,Date >="2001-01-01" & Date <"2014-01-01")
+imm.contracts.volume$Electronic.Volume <- as.numeric(imm.contracts.volume$Electronic.Volume) 
+
+imm.contracts.volume <- aggregate(cbind(Electronic.Volume, Total.Volume)~Date, data=imm.contracts.volume, sum) 
+
+imm.contracts.volume$Seat.Price <- seat.prices$IMM
+# imm.contracts.volume
+
+# split the dataset
+imm.training <- subset(imm.contracts.volume, Date <"2013-01-01")
+imm.holdout <- subset(imm.contracts.volume,Date >="2013-01-01")
+head(imm.training)
+head(imm.holdout)
+```
+
+```{r}
+plot(imm.contracts.volume$Date,imm.contracts.volume$Electronic.Volume, type = "l", col = "red")
+plot(imm.contracts.volume$Date,imm.contracts.volume$Total.Volume, type = "l", col = "blue")
+```
+
+
+1.Linear regression (seat price is independent, volume(s) dependent)
+
+```{r}
+imm.m1 <- lm(Seat.Price ~ Electronic.Volume + Total.Volume, data=imm.training) 
+summary(imm.m1)
+```
+
+```{r}
+imm.m1 <- lm(Seat.Price ~ Electronic.Volume, data=imm.training) 
+summary(imm.m1)
+plot(imm.m1$residuals,type="l")
+```
+
+
+```{r}
+imm.m1.pred <- predict(imm.m1,imm.holdout)
+imm.m1.pred
+```
+
+2.Linear regression with ARMA errors (use arima with xreg)
+
+```{r}
+imm.m2<- auto.arima(imm.training$Seat.Price, xreg = imm.training[,c(2,3)], allowdrift = FALSE) 
+summary(imm.m2)
+plot(imm.m2$residuals)
+```
+
+```{r}
+imm.m2.pred <- predict(imm.m2, n.ahead=12, newxreg = imm.holdout[,c(2, 3)])$pred 
+imm.m2.pred
+```
+
+3.Holt Winters
+
+```{r}
+imm.m3 <- HoltWinters(ts(imm.training$Seat.Price,start = c(2001, 1), frequency = 12))
+summary(imm.m3)  
+plot(resid(imm.m3))
+```
+
+```{r}
+imm.m3.pred <- predict(imm.m3,n.ahead = 12)
+imm.m3.pred 
+```
+
+4.ARIMA
+```{r}
+imm.m4 <-  auto.arima(imm.training$Seat.Price, allowdrift = FALSE, stepwise=FALSE)
+summary(imm.m4)
+plot(imm.m4$residuals)
+```
+
+```{r}
+imm.m4.pred <- forecast(imm.m4,h=12)$mean
+imm.m4.pred
+```
+
+5.Seasonal ARIMA (SARIMA) - here seasonality is monthly
+```{r}
+imm.m5 <- auto.arima(ts(imm.training$Seat.Price,frequency = 12),allowdrift = FALSE)
+summary(imm.m5)
+plot(imm.m5$residuals)
+```
+
+```{r}
+imm.m5.pred <- forecast(imm.m5,h=12)$mean
+imm.m5.pred
+```
+
+6.Fractional ARIMA (ARFIMA) - check applicability first using the ACF
+
+```{r}
+imm.m6 <-arfima(imm.training$Seat.Price)
+summary(imm.m6)
+plot(imm.m6$residuals)
+```
+
+```{r}
+imm.m6.pred <- forecast(imm.m6, h=12)$mean
+imm.m6.pred
+```
+
+7.ARMA and GARCH combination - use the fGarch R library and garchFit()
+
+```{r}
+imm.training.xts <- xts(imm.training$Seat.Price, order.by = as.Date(imm.training$Date,"%m/%d/%Y"))
+imm.training.logreturn <- diff(log(imm.training.xts))[-1]
+auto.arima(imm.training.logreturn)
+```
+
+```{r}
+imm.m7 <-garchFit(~arma(0,0)+garch(1,1),data = imm.training.logreturn,cond.dist = "std",trace=FALSE)
+summary(imm.m7)
+```
+
+```{r}
+imm.m7.pred.log <-predict(imm.m7,n.ahead=12)$meanForecast
+imm.m7.pred <- as.numeric(tail(imm.training.xts,1)*exp(imm.m7.pred.log))
+imm.m7.pred
+```
+
+
+#### IOM
+
+```{r}
+iom.commodity.code <-unique(as.character(contracts.classification[which(contracts.classification$Division =='IOM'),]$Commodity.Code)) 
+```
+
+```{r}
+iom.contracts.volume <- contracts.volume[is.element(contracts.volume$Commodity.Indicator,iom.commodity.code),]
+head(iom.contracts.volume)
+```
+
+```{r}
+iom.contracts.volume$Date <- as.Date(iom.contracts.volume$Date,"%m/%d/%Y")
+iom.contracts.volume <- subset(iom.contracts.volume,Date >="2001-01-01" & Date <"2014-01-01")
+iom.contracts.volume$Electronic.Volume <- as.numeric(iom.contracts.volume$Electronic.Volume) 
+
+iom.contracts.volume <- aggregate(cbind(Electronic.Volume, Total.Volume)~Date, data=iom.contracts.volume, sum) 
+
+iom.contracts.volume$Seat.Price <- seat.prices$IOM 
+# iom.contracts.volume
+
+# split the dataset
+iom.training <- subset(iom.contracts.volume, Date <"2013-01-01")
+iom.holdout <- subset(iom.contracts.volume,Date >="2013-01-01")
+head(iom.training)
+head(iom.holdout)
+```
+
+
+```{r}
+plot(iom.contracts.volume$Date,iom.contracts.volume$Electronic.Volume, type = "l", col = "red")
+plot(iom.contracts.volume$Date,iom.contracts.volume$Total.Volume, type = "l", col = "blue")
+#plot(iom.contracts.volume$Date,iom.contracts.volume$Seat.Price, type = "l", col = "black")
+```
+
+
+1.Linear regression (seat price is independent, volume(s) dependent)
+
+```{r}
+iom.m1 <- lm(Seat.Price ~ Electronic.Volume + Total.Volume, data=iom.training) 
+summary(iom.m1)
+```
+
+
+```{r}
+iom.m1 <- lm(Seat.Price ~ Electronic.Volume, data=iom.training) 
+summary(iom.m1)
+plot(iom.m1$residuals,type="l")
+```
+
+
+```{r}
+iom.m1.pred <- predict(iom.m1,iom.holdout)
+iom.m1.pred
+```
+
+2.Linear regression with ARMA errors (use arima with xreg)
+
+```{r}
+iom.m2<- auto.arima(iom.training$Seat.Price, xreg = iom.training[,c(2,3)], allowdrift = FALSE) 
+summary(iom.m2)
+head(iom.training)
+plot(iom.m2$residuals)
+```
+
+```{r}
+iom.m2.pred <- predict(iom.m2, n.ahead=12, newxreg = iom.holdout[,c(2, 3)])$pred 
+iom.m2.pred
+```
+
+3.Holt Winters
+
+```{r}
+iom.m3 <- HoltWinters(ts(iom.training$Seat.Price,start = c(2001, 1), frequency = 12))
+summary(iom.m3)  
+plot(resid(iom.m3))
+```
+
+```{r}
+iom.m3.pred <- predict(iom.m3,n.ahead = 12)
+iom.m3.pred 
+```
+
+4.ARIMA
+```{r}
+iom.m4 <-  auto.arima(iom.training$Seat.Price, allowdrift = FALSE, stepwise=FALSE)
+summary(iom.m4)
+plot(iom.m4$residuals)
+```
+
+```{r}
+iom.m4.pred <- forecast(iom.m4,h=12)$mean
+iom.m4.pred
+```
+
+5.Seasonal ARIMA (SARIMA) - here seasonality is monthly
+```{r}
+iom.m5 <- auto.arima(ts(iom.training$Seat.Price,frequency = 12),allowdrift = FALSE)
+summary(iom.m5)
+plot(iom.m5$residuals)
+```
+
+```{r}
+iom.m5.pred <- forecast(iom.m5,h=12)$mean
+iom.m5.pred
+```
+
+6.Fractional ARIMA (ARFIMA) - check applicability first using the ACF
+
+```{r}
+iom.m6 <-arfima(iom.training$Seat.Price)
+summary(iom.m6)
+plot(iom.m6$residuals)
+```
+
+```{r}
+iom.m6.pred <- forecast(iom.m6, h=12)$mean
+iom.m6.pred
+```
+
+7.ARMA and GARCH combination - use the fGarch R library and garchFit()
+
+```{r}
+iom.training.xts <- xts(iom.training$Seat.Price, order.by = as.Date(iom.training$Date,"%m/%d/%Y"))
+iom.training.logreturn <- diff(log(iom.training.xts))[-1]
+auto.arima(iom.training.logreturn)
+```
+
+```{r}
+iom.m7 <-garchFit(~arma(0,0)+garch(1,1),data = iom.training.logreturn,cond.dist = "std",trace=FALSE)
+summary(iom.m7)
+```
+
+```{r}
+iom.m7.pred.log <-predict(iom.m7,n.ahead=12)$meanForecast
+iom.m7.pred <- as.numeric(tail(iom.training.xts,1)*exp(iom.m7.pred.log))
+iom.m7.pred
+```
+
+#### Task C
+Evaluate each algorithm from Task B using sMAPE. Decide which one should be recommended to forecast monthly prices for each of the seat classes.
+
+```{r}
+cme.preds <-list()
+cme.preds$lm<- cme.m1.pred
+cme.preds$xreg <- cme.m2.pred
+cme.preds$hw <- cme.m3.pred
+cme.preds$arima <- cme.m4.pred
+cme.preds$sarima <- cme.m5.pred
+cme.preds$arfima <- cme.m6.pred
+cme.preds$garch <- cme.m7.pred
+smape.cme <-mapply(sMAPE, cme.preds, list(cme.holdout$Seat.Price))
+smape.cme
+```
+
+> For CME, the ARFIMA model gives the lowest SMAPE.
+
+```{r}
+imm.preds <-list()
+imm.preds$lm<- imm.m1.pred
+imm.preds$xreg <- imm.m2.pred
+imm.preds$hw <- imm.m3.pred
+imm.preds$arima <- imm.m4.pred
+imm.preds$sarima <- imm.m5.pred
+imm.preds$arfima <- imm.m6.pred
+imm.preds$garch <- imm.m7.pred
+smape.imm <-mapply(sMAPE, imm.preds, list(imm.holdout$Seat.Price))
+smape.imm
+```
+> For IMM, the Holt Winters model gives the lowest SMAPE.
+
+```{r}
+iom.preds <-list()
+iom.preds$lm<- iom.m1.pred
+iom.preds$xreg <- iom.m2.pred
+iom.preds$hw <- iom.m3.pred
+iom.preds$arima <- iom.m4.pred
+iom.preds$sarima <- iom.m5.pred
+iom.preds$arfima <- iom.m6.pred
+iom.preds$garch <- iom.m7.pred
+smape.iom <-mapply(sMAPE, iom.preds, list(iom.holdout$Seat.Price))
+smape.iom
+```
+
+> For IMM, the GARCH model gives the lowest SMAPE.
